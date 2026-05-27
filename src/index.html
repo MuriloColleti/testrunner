@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Znap Test Runner</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="layout">
+
+    <!-- ── Sidebar ───────────────────────────────── -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 2L3 7v10l9 5 9-5V7L12 2z" stroke-linejoin="round"/>
+            <path d="M12 2v20M3 7l9 5 9-5" stroke-linejoin="round"/>
+          </svg>
+          <span>Znap <span class="logo-accent">Tests</span></span>
+        </div>
+      </div>
+
+      <div class="sidebar-suites" id="suiteList">
+        <div class="sidebar-loading">Carregando...</div>
+      </div>
+    </aside>
+
+    <!-- ── Main ──────────────────────────────────── -->
+    <main class="main">
+
+      <div class="tabs-bar" id="tabsBar" style="display:none">
+        <div class="tabs-list" id="tabsList"></div>
+      </div>
+
+      <div class="content" id="content">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+              <path d="M5 3l14 9-14 9V3z" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <p class="empty-title">Pronto para testar</p>
+          <p class="empty-sub">Clique em <span class="kbd">▶</span> em uma suite para iniciar</p>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
