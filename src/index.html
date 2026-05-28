@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Znap Test Runner</title>
+  <title>ReportTest</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="layout">
 
-    <!-- ── Sidebar ───────────────────────────────── -->
+    <!-- ── Sidebar ──────────────────────────────── -->
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="logo">
@@ -17,18 +17,18 @@
             <path d="M12 2L3 7v10l9 5 9-5V7L12 2z" stroke-linejoin="round"/>
             <path d="M12 2v20M3 7l9 5 9-5" stroke-linejoin="round"/>
           </svg>
-          <span>Znap <span class="logo-accent">Tests</span></span>
+          <span>Report<span class="logo-accent">Test</span></span>
         </div>
+        <button class="add-btn" id="addProjectBtn" title="Adicionar projeto">+</button>
       </div>
 
       <div class="sidebar-suites" id="suiteList">
-        <div class="sidebar-loading">Carregando...</div>
+        <!-- populated by JS -->
       </div>
     </aside>
 
-    <!-- ── Main ──────────────────────────────────── -->
+    <!-- ── Main ─────────────────────────────────── -->
     <main class="main">
-
       <div class="tabs-bar" id="tabsBar" style="display:none">
         <div class="tabs-list" id="tabsList"></div>
       </div>
@@ -40,12 +40,57 @@
               <path d="M5 3l14 9-14 9V3z" stroke-linejoin="round"/>
             </svg>
           </div>
-          <p class="empty-title">Pronto para testar</p>
-          <p class="empty-sub">Clique em <span class="kbd">▶</span> em uma suite para iniciar</p>
+          <p class="empty-title" id="emptyTitle">Nenhum projeto configurado</p>
+          <p class="empty-sub" id="emptySub">Adicione um projeto para começar</p>
+          <button class="btn-primary" id="emptyAddBtn">+ Adicionar Projeto</button>
         </div>
       </div>
-
     </main>
+  </div>
+
+  <!-- ── Config Modal ──────────────────────────── -->
+  <div class="modal-overlay" id="configModal">
+    <div class="modal">
+      <div class="modal-header">
+        <span id="modalTitle">Adicionar Projeto</span>
+        <button class="modal-close" id="modalCloseBtn">×</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="inputName">Nome do Projeto</label>
+          <input type="text" id="inputName" placeholder="Ex: Fluke, Venturus..." autocomplete="off" />
+        </div>
+
+        <div class="form-group">
+          <label for="inputPath">Caminho do Projeto</label>
+          <div class="path-row">
+            <input type="text" id="inputPath" placeholder="C:\caminho\para\o\projeto" autocomplete="off" />
+            <button class="browse-btn" id="browseBtn" title="Selecionar pasta">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
+                <path d="M1 4.5A1.5 1.5 0 012.5 3H6l1.5 2H13.5A1.5 1.5 0 0115 6.5v6A1.5 1.5 0 0113.5 14h-11A1.5 1.5 0 011 12.5v-8z"/>
+              </svg>
+              Procurar
+            </button>
+          </div>
+          <span class="form-hint">Pasta raiz do projeto Playwright (onde está o <code>package.json</code>)</span>
+        </div>
+
+        <button class="btn-verify" id="verifyBtn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
+            <circle cx="6.5" cy="6.5" r="4"/><path d="M11 11l3 3"/>
+          </svg>
+          Verificar Caminho
+        </button>
+
+        <div class="verify-result" id="verifyResult" style="display:none"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-secondary" id="modalCancelBtn">Cancelar</button>
+        <button class="btn-primary" id="modalSaveBtn" disabled>Salvar</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>
