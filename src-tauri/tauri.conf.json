@@ -1,19 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ReportTest",
+  "productName": "TestRunner",
   "version": "0.1.0",
-  "identifier": "com.reporttest.app",
+  "identifier": "com.testrunner.app",
   "build": {
     "beforeDevCommand": "npm run dev:vite",
     "beforeBuildCommand": "npm run build:vite",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:1422",
     "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "ReportTest",
+        "title": "TestRunner",
         "width": 1280,
         "height": 800,
         "minWidth": 960,
@@ -26,7 +26,8 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

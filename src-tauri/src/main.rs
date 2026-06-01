@@ -11,6 +11,8 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+mod scheduler;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +48,7 @@ struct TestRun {
     pass_count: i64,
     fail_count: i64,
     started_at: String,
+    coverage_pct: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,11 +69,10 @@ struct StatusEvent {
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
-struct AppState {
-    db:      Mutex<Connection>,
-    running: Mutex<HashMap<String, oneshot::Sender<()>>>,
-    // track in-flight run metadata for DB save on completion
-    run_meta: Mutex<HashMap<String, RunMeta>>,
+pub(crate) struct AppState {
+    pub(crate) db: Mutex<Connection>,
+    running:       Mutex<HashMap<String, oneshot::Sender<()>>>,
+    run_meta:      Mutex<HashMap<String, RunMeta>>,
 }
 
 #[derive(Clone)]
@@ -85,6 +87,8 @@ struct RunMeta {
     fail_count:   i64,
     pid:          Option<u32>,
     output_lines: Vec<String>,
+    project_path: String,
+    suite_cwd:    String,
 }
 
 // ── Database setup ────────────────────────────────────────────────────────────
@@ -93,7 +97,7 @@ fn db_path(app: &tauri::AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
         .expect("failed to resolve app data dir")
-        .join("reporttest.db")
+        .join("testrunner.db")
 }
 
 fn init_db(conn: &Connection) {
@@ -122,10 +126,23 @@ fn init_db(conn: &Connection) {
             started_at   TEXT NOT NULL,
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS schedules (
+            id           TEXT PRIMARY KEY,
+            project_id   TEXT NOT NULL,
+            suite_id     TEXT NOT NULL,
+            label        TEXT NOT NULL,
+            scheduled_at TEXT NOT NULL,
+            recurrence   TEXT NOT NULL DEFAULT 'once',
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            last_run_at  TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );
     ").expect("failed to initialize database");
 
     // Migration: add output column (ignored if already exists)
     let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN output TEXT", []);
+    let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN coverage_pct REAL", []);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -151,6 +168,18 @@ fn now_iso() -> String {
         .as_secs();
     // Simple ISO-8601 approximation via SQLite datetime
     format!("datetime({}, 'unixepoch')", now)
+}
+
+fn read_coverage(project_path: &str, suite_cwd: &str) -> Option<f64> {
+    let base = if suite_cwd.is_empty() {
+        PathBuf::from(project_path)
+    } else {
+        PathBuf::from(project_path).join(suite_cwd)
+    };
+    let path = base.join("coverage").join("coverage-summary.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("total")?.get("lines")?.get("pct")?.as_f64()
 }
 
 // ── Project commands ──────────────────────────────────────────────────────────
@@ -223,13 +252,14 @@ fn get_runs(state: State<'_, AppState>, project_id: Option<String>) -> Result<Ve
             pass_count:   row.get(8)?,
             fail_count:   row.get(9)?,
             started_at:   row.get(10)?,
+            coverage_pct: row.get(11)?,
         })
     };
 
     let runs: Vec<TestRun> = if let Some(pid) = project_id {
         let mut stmt = db.prepare(
             "SELECT id,project_id,project_name,suite_id,suite_name,suite_tag,status,\
-             duration_ms,pass_count,fail_count,started_at \
+             duration_ms,pass_count,fail_count,started_at,coverage_pct \
              FROM test_runs WHERE project_id=?1 ORDER BY started_at DESC LIMIT 500"
         ).map_err(|e| e.to_string())?;
         let rows: Vec<TestRun> = stmt.query_map(params![pid], map_row)
@@ -240,7 +270,7 @@ fn get_runs(state: State<'_, AppState>, project_id: Option<String>) -> Result<Ve
     } else {
         let mut stmt = db.prepare(
             "SELECT id,project_id,project_name,suite_id,suite_name,suite_tag,status,\
-             duration_ms,pass_count,fail_count,started_at \
+             duration_ms,pass_count,fail_count,started_at,coverage_pct \
              FROM test_runs ORDER BY started_at DESC LIMIT 500"
         ).map_err(|e| e.to_string())?;
         let rows: Vec<TestRun> = stmt.query_map([], map_row)
@@ -287,15 +317,20 @@ async fn pick_folder() -> Option<String> {
     .flatten()
 }
 
-// ── PDF save dialog ───────────────────────────────────────────────────────────
+// ── File save dialog ──────────────────────────────────────────────────────────
 
 #[tauri::command]
 async fn save_pdf(filename: String, data: Vec<u8>) -> Result<String, String> {
     let path = tokio::task::spawn_blocking(move || {
+        let ext = filename.rsplit('.').next().unwrap_or("pdf");
+        let (title, filter_name) = match ext {
+            "xlsx" => ("Salvar Relatório Excel", "Excel"),
+            _      => ("Salvar Relatório PDF",   "PDF"),
+        };
         rfd::FileDialog::new()
-            .set_title("Salvar Relatório PDF")
+            .set_title(title)
             .set_file_name(&filename)
-            .add_filter("PDF", &["pdf"])
+            .add_filter(filter_name, &[ext])
             .save_file()
     })
     .await
@@ -408,15 +443,92 @@ fn scan_dir(root: &PathBuf, dir: &PathBuf, depth: usize, suites: &mut Vec<Suite>
     if has_vitest {
         let id = if rel.is_empty() { "vitest-unit".into() }
                  else { format!("{}-unit", rel.replace('/', "-")) };
+
+        // Check if any vitest config has coverage configured
+        let coverage_enabled = ["vitest.config.ts", "vitest.config.js", "vitest.config.mjs", "vitest.config.cjs"]
+            .iter()
+            .find(|f| dir.join(f).exists())
+            .and_then(|f| std::fs::read_to_string(dir.join(f)).ok())
+            .map(|c| c.contains("coverage:") || c.contains("coverage :"))
+            .unwrap_or(false);
+
+        let mut args = vec!["run".into(), "--reporter=verbose".into()];
+        if coverage_enabled {
+            args.push("--coverage".into());
+        }
+
         suites.push(Suite {
             id,
             name:    "Unit Tests".into(),
             system:  folder.clone(),
             tag:     "Unit".into(),
             command: "vitest".into(),
-            args:    vec!["run".into(), "--reporter=verbose".into()],
+            args,
             cwd:     rel.clone(),
         });
+    }
+
+    // ── package.json npm scripts ──────────────────────────────────────────
+    let pkg_path = dir.join("package.json");
+    if pkg_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pkg_path) {
+            if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object()) {
+                    for (script_name, script_val) in scripts {
+                        // Only pick up "test" or "test:*" scripts
+                        if script_name != "test" && !script_name.starts_with("test:") { continue; }
+                        // Skip echo stubs (placeholder scripts)
+                        let val = script_val.as_str().unwrap_or("");
+                        if val.starts_with("echo") { continue; }
+                        // Skip scripts that are just wrappers around an already-detected runner
+                        let val_lower = val.to_lowercase();
+                        if has_vitest && val_lower.contains("vitest") { continue; }
+                        if has_pw && val_lower.contains("playwright") { continue; }
+
+                        let tag = {
+                            let s = script_name.to_lowercase();
+                            if s.contains("e2e") { "E2E" }
+                            else if s.contains("unit") { "Unit" }
+                            else if s.contains("api") { "API" }
+                            else { "Unit" }
+                        }.to_string();
+
+                        let name = if script_name == "test" {
+                            "Tests".to_string()
+                        } else {
+                            script_name.splitn(2, ':')
+                                .nth(1).unwrap_or(script_name)
+                                .split(':')
+                                .map(|p| {
+                                    let mut chars = p.chars();
+                                    match chars.next() {
+                                        None => String::new(),
+                                        Some(ch) => ch.to_uppercase().to_string() + chars.as_str(),
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        };
+
+                        let id = if rel.is_empty() {
+                            format!("npm-{}", script_name.replace(':', "-"))
+                        } else {
+                            format!("{}-npm-{}", rel.replace('/', "-"), script_name.replace(':', "-"))
+                        };
+
+                        suites.push(Suite {
+                            id,
+                            name,
+                            system:  folder.clone(),
+                            tag,
+                            command: "npm".into(),
+                            args:    vec!["run".into(), script_name.clone()],
+                            cwd:     rel.clone(),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // ── Recurse ───────────────────────────────────────────────────────────
@@ -507,6 +619,8 @@ async fn run_suite(
         fail_count: 0,
         pid: None,
         output_lines: Vec::new(),
+        project_path: project_path.clone(),
+        suite_cwd: suite_cwd.clone(),
     });
 
     let _ = app.emit("suite-started", StatusEvent {
@@ -533,14 +647,22 @@ async fn run_suite(
         // Access state through AppHandle inside the task (lifetime is 'static here)
         let state = app.state::<AppState>();
 
-        let mut cmd = Command::new("npx");
-        cmd.arg(&suite_command);
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C");
+        if suite_command == "npm" {
+            cmd.arg("npm");
+        } else {
+            cmd.arg("npx");
+            cmd.arg(&suite_command);
+        }
         cmd.args(&suite_args);
         cmd.current_dir(&pw_dir);
         cmd.env("FORCE_COLOR", "0");
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -644,15 +766,16 @@ fn save_run_to_db(app: &tauri::AppHandle, suite_id: &str, status: &str, duration
 
     if let Some(m) = meta {
         let output_json = serde_json::to_string(&m.output_lines).unwrap_or_default();
+        let coverage = read_coverage(&m.project_path, &m.suite_cwd);
         let db = state.db.lock().unwrap();
         let _ = db.execute(
-            "INSERT INTO test_runs (id,project_id,project_name,suite_id,suite_name,suite_tag,status,duration_ms,pass_count,fail_count,started_at,output)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime(?11,'unixepoch'),?12)",
+            "INSERT INTO test_runs (id,project_id,project_name,suite_id,suite_name,suite_tag,status,duration_ms,pass_count,fail_count,started_at,output,coverage_pct)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime(?11,'unixepoch'),?12,?13)",
             params![
                 m.run_id, m.project_id, m.project_name,
                 suite_id, m.suite_name, m.suite_tag,
                 status, duration_ms as i64, m.pass_count, m.fail_count,
-                m.started_at, output_json
+                m.started_at, output_json, coverage
             ],
         );
         // Emit updated history to frontend
@@ -699,6 +822,7 @@ fn main() {
                 running:  Mutex::new(HashMap::new()),
                 run_meta: Mutex::new(HashMap::new()),
             });
+            scheduler::start_scheduler_loop(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -712,6 +836,10 @@ fn main() {
             stop_suite,
             get_runs,
             get_run_output,
+            scheduler::get_schedules,
+            scheduler::save_schedule,
+            scheduler::delete_schedule,
+            scheduler::toggle_schedule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

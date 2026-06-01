@@ -1,7 +1,7 @@
 {
-  "name": "reporttest",
+  "name": "testrunner",
   "version": "0.1.0",
-  "description": "ReportTest - Desktop",
+  "description": "TestRunner - Desktop",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
+    "exceljs": "^4.4.0",
     "jspdf": "^4.2.1",
     "vue": "^3.4.0"
   },
