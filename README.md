@@ -1,4 +1,4 @@
-# ReportTest
+# TestRunner
 
 Aplicativo desktop para executar, monitorar e agendar suites de testes automatizados. Construído com **Tauri + Vue 3** para Windows.
 
@@ -6,7 +6,7 @@ Aplicativo desktop para executar, monitorar e agendar suites de testes automatiz
 
 ## Sumário
 
-1. [O que é o ReportTest](#o-que-é-o-reporttest)
+1. [O que é o TestRunner](#o-que-é-o-testrunner)
 2. [Instalação](#instalação)
 3. [Como adicionar um projeto](#como-adicionar-um-projeto)
 4. [Estrutura de projeto suportada](#estrutura-de-projeto-suportada)
@@ -23,9 +23,9 @@ Aplicativo desktop para executar, monitorar e agendar suites de testes automatiz
 
 ---
 
-## O que é o ReportTest
+## O que é o TestRunner
 
-O ReportTest centraliza todos os seus projetos de teste em um único lugar. Com ele você pode:
+O TestRunner centraliza todos os seus projetos de teste em um único lugar. Com ele você pode:
 
 - **Executar** qualquer suite com um clique, ver o output em tempo real e acompanhar o progresso (passou / falhou / restantes)
 - **Parar** uma execução a qualquer momento
