@@ -11,7 +11,7 @@ Aplicativo desktop para executar, monitorar e agendar suites de testes automatiz
 3. [Como adicionar um projeto](#como-adicionar-um-projeto)
 4. [Estrutura de projeto suportada](#estrutura-de-projeto-suportada)
    - [Playwright — layout simples](#playwright--layout-simples)
-   - [Playwright — layout multi-módulo (Znap)](#playwright--layout-multi-módulo-znap)
+   - [Playwright — layout multi-módulo](#playwright--layout-multi-módulo)
    - [Vitest](#vitest)
    - [Scripts npm personalizados](#scripts-npm-personalizados)
 5. [Detecção automática de suites](#detecção-automática-de-suites)
@@ -46,7 +46,7 @@ O TestRunner centraliza todos os seus projetos de teste em um único lugar. Com 
 ## Como adicionar um projeto
 
 1. Clique no botão **+** no canto superior da sidebar
-2. Preencha o **Nome** do projeto (ex: `Nissin`, `Venturus`)
+2. Preencha o **Nome** do projeto (ex: `Frontend`, `API`)
 3. Informe ou navegue até o **Caminho** da pasta raiz do projeto
 4. Clique em **Verificar Caminho** — o sistema varre a pasta e detecta automaticamente as suites
 5. Se encontrar suites, o botão **Salvar** é habilitado
@@ -93,7 +93,7 @@ A suite aparece na sidebar com a tag **E2E**.
 
 ---
 
-### Playwright — layout multi-módulo (Znap)
+### Playwright — layout multi-módulo
 
 Se o projeto Playwright tiver uma pasta `modules/` na raiz, o sistema detecta **cada módulo separadamente**, criando uma suite por módulo para Frontend e/ou Backend:
 
@@ -101,13 +101,13 @@ Se o projeto Playwright tiver uma pasta `modules/` na raiz, o sistema detecta **
 projeto/
 ├── playwright.config.ts
 ├── modules/
-│   ├── nissin/
-│   │   ├── frontend/          ← gera suite E2E "Nissin · Frontend"
+│   ├── modulo-a/
+│   │   ├── frontend/          ← gera suite E2E "Modulo A · Frontend"
 │   │   │   └── *.spec.ts
-│   │   └── backend/           ← gera suite API "Nissin · Backend API"
+│   │   └── backend/           ← gera suite API "Modulo A · Backend API"
 │   │       └── *.spec.ts
-│   ├── venturus/
-│   │   └── frontend/          ← gera suite E2E "Venturus · Frontend"
+│   ├── modulo-b/
+│   │   └── frontend/          ← gera suite E2E "Modulo B · Frontend"
 │   │       └── *.spec.ts
 │   └── shared/                ← ignorado
 └── package.json
@@ -117,8 +117,8 @@ projeto/
 
 | Pasta encontrada | Tag | Comando executado |
 |---|---|---|
-| `modules/nissin/frontend/` | E2E | `npx playwright test modules/nissin/frontend --project=chromium --reporter=list` |
-| `modules/nissin/backend/` | API | `npx playwright test modules/nissin/backend --project=api --reporter=list` |
+| `modules/modulo-a/frontend/` | E2E | `npx playwright test modules/modulo-a/frontend --project=chromium --reporter=list` |
+| `modules/modulo-a/backend/` | API | `npx playwright test modules/modulo-a/backend --project=api --reporter=list` |
 
 > A pasta `shared` dentro de `modules/` é ignorada automaticamente.
 
@@ -296,7 +296,7 @@ Clique em **+ Novo Agendamento** e preencha:
 
 | Campo | Descrição |
 |---|---|
-| **Nome** | Identificação do agendamento (ex: "Nightly E2E Nissin") |
+| **Nome** | Identificação do agendamento (ex: "Nightly E2E Frontend") |
 | **Projeto** | Projeto cadastrado no sistema |
 | **Suite** | Suite daquele projeto a ser executada |
 | **Recorrência** | Uma vez / Diário / Semanal |
