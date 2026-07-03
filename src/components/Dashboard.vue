@@ -679,7 +679,13 @@ async function exportDashboardExcel() {
   const buffer = await wb.xlsx.writeBuffer()
   const filename = `dashboard-${new Date().toISOString().slice(0, 10)}.xlsx`
   try {
-    await invoke('save_pdf', { filename, data: Array.from(new Uint8Array(buffer)) })
+    const bytes = new Uint8Array(buffer)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+    }
+    const data = btoa(binary)
+    await invoke('save_pdf', { filename, data })
   } catch (e) {
     if (e !== 'cancelado') console.error('[export xlsx]', e)
   }

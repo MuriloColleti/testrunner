@@ -242,6 +242,25 @@ async function openHistoryRun(run) {
   try {
     const outputLines = await invoke('get_run_output', { runId: run.id })
     lines[run.suiteId] = outputLines.map(text => ({ text, cls: classifyLine(text) }))
+
+    // Re-derive pass/fail counts from output lines when DB values are missing
+    // (old runs saved before the Rust counter fix have 0s in the DB)
+    if (runs[run.suiteId] && runs[run.suiteId].passCount === 0 && runs[run.suiteId].failCount === 0) {
+      let derivedPass = 0, derivedFail = 0
+      for (const { text, cls } of lines[run.suiteId]) {
+        if (cls === 'l-pass') derivedPass++
+        else if (cls === 'l-fail') derivedFail++
+        const mPass = text.match(/(\d+)\s+passed/i)
+        if (mPass) { const n = parseInt(mPass[1]); if (n > derivedPass) derivedPass = n }
+        const mFail = text.match(/(\d+)\s+failed/i)
+        if (mFail) { const n = parseInt(mFail[1]); if (n > derivedFail) derivedFail = n }
+      }
+      if (derivedPass > 0 || derivedFail > 0) {
+        runs[run.suiteId].passCount  = derivedPass
+        runs[run.suiteId].failCount  = derivedFail
+        runs[run.suiteId].totalCount = derivedPass + derivedFail
+      }
+    }
   } catch (e) {
     console.error('[history] erro ao carregar output:', e)
     lines[run.suiteId] = [{ text: '(output nao disponivel para esta execucao)', cls: 'l-default' }]
@@ -611,8 +630,8 @@ async function exportReport(suiteId, tab) {
     const safe     = `${tab.projName}-${tab.suiteName}`.replace(/[^a-z0-9]/gi, '-').toLowerCase()
     const df       = now.toISOString().slice(0, 10)
     const filename = `report-${safe}-${df}.pdf`
-    const buffer   = doc.output('arraybuffer')
-    const data     = Array.from(new Uint8Array(buffer))
+    const dataUri  = doc.output('datauristring')
+    const data     = dataUri.split(',')[1]
 
     await invoke('save_pdf', { filename, data })
   } catch (err) {
