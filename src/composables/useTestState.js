@@ -166,10 +166,13 @@ function handleRunBtn(suiteId, projectId) {
   runStatus(suiteId) === 'running' ? stopRun(suiteId) : startRun(suiteId, projectId)
 }
 
-function startRun(suiteId, projectId) {
+// Prepara o estado local de um run (aba, terminal, timer) SEM invocar o
+// backend — usado quando a execução já foi iniciada por outro caminho
+// (ex.: agendamento disparado pelo scheduler no Rust).
+function attachRun(suiteId, projectId) {
   const proj  = projects.value.find(p => p.id === projectId)
   const suite = proj?.suites.find(s => s.id === suiteId)
-  if (!proj || !suite) return
+  if (!proj || !suite) return null
 
   runs[suiteId] = {
     status: 'running', startTime: Date.now(), elapsed: 0,
@@ -180,8 +183,17 @@ function startRun(suiteId, projectId) {
 
   ensureTab(suiteId, suite, proj)
   activateTab(suiteId)
-  currentView.value = 'runner'
   startTimer(suiteId)
+
+  return { proj, suite }
+}
+
+function startRun(suiteId, projectId) {
+  const attached = attachRun(suiteId, projectId)
+  if (!attached) return
+  const { proj, suite } = attached
+
+  currentView.value = 'runner'
 
   invoke('run_suite', {
     projectId:    proj.id,    projectName:  proj.name,
@@ -254,7 +266,7 @@ export function useTestState() {
     remainCount, totalCount, classifyLine,
     loadProjects, registerListeners,
     suitesByTag, isCollapsed, toggleGroup,
-    startRun, stopRun, handleRunBtn,
+    attachRun, startRun, stopRun, handleRunBtn,
     ensureTab, activateTab, closeTab,
   }
 }

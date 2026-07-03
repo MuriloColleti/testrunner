@@ -35,11 +35,13 @@ async function registerSchedulerListeners() {
   if (listenersRegistered) return
   listenersRegistered = true
 
-  const { startRun } = useTestState()
+  const { attachRun } = useTestState()
 
   await listen('schedule-triggered', ({ payload }) => {
-    console.log('[scheduler] disparando agendamento:', payload.label)
-    startRun(payload.suiteId, payload.projectId)
+    // O backend já executa a suite sozinho — aqui só anexamos a UI
+    // (aba + terminal) para acompanhar o run ao vivo.
+    console.log('[scheduler] agendamento disparado:', payload.label)
+    attachRun(payload.suiteId, payload.projectId)
   })
 
   await listen('schedules-updated', () => {

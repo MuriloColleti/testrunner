@@ -4,12 +4,25 @@
     <!-- Top bar -->
     <div class="sv-topbar">
       <h2 class="sv-title">Agendamentos</h2>
-      <button class="btn-primary sv-new-btn" @click="openNew">
-        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11">
-          <path d="M6 1v10M1 6h10"/>
-        </svg>
-        Novo Agendamento
-      </button>
+      <div class="sv-topbar-actions">
+        <button
+          class="sched-toggle sv-autostart"
+          :class="{ on: autostart }"
+          title="Abrir o TestRunner junto com o sistema (em segundo plano, na bandeja) para executar os testes agendados"
+          @click="toggleAutostart"
+        >
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+          <span class="sv-autostart-label">Iniciar com o sistema</span>
+        </button>
+        <button class="btn-primary sv-new-btn" @click="openNew">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11">
+            <path d="M6 1v10M1 6h10"/>
+          </svg>
+          Novo Agendamento
+        </button>
+      </div>
     </div>
 
     <!-- Content -->
@@ -120,6 +133,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { invoke }        from '@tauri-apps/api/core'
 import { useTestState }  from '../composables/useTestState'
 import { useScheduler }  from '../composables/useScheduler'
 import CalendarMonth     from './CalendarMonth.vue'
@@ -138,8 +152,25 @@ const modal = reactive({
   editSchedule: null,
 })
 
+// ── Autostart ─────────────────────────────────────────────────────────────────
+const autostart = ref(false)
+
+async function toggleAutostart() {
+  const next = !autostart.value
+  try {
+    await invoke('set_autostart', { enabled: next })
+    autostart.value = next
+  } catch (e) {
+    console.error('[autostart] erro:', e)
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
-onMounted(loadSchedules)
+onMounted(async () => {
+  loadSchedules()
+  try { autostart.value = await invoke('get_autostart') }
+  catch (e) { console.error('[autostart] erro:', e) }
+})
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 const filteredSchedules = computed(() => {
@@ -229,6 +260,18 @@ function fmtSelectedDate(ds) {
   font-size: 12px;
   padding: 6px 12px;
 }
+.sv-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.sv-autostart { gap: 7px; }
+.sv-autostart-label {
+  font-size: 11px;
+  color: var(--muted);
+  transition: color .12s;
+}
+.sv-autostart:hover .sv-autostart-label { color: var(--text); }
 
 /* Content: two-column */
 .sv-content {

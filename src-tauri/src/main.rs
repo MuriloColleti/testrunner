@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::oneshot;
@@ -16,14 +19,29 @@ mod scheduler;
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Suite {
-    id: String,
-    name: String,
-    system: String,
-    tag: String,       // "E2E" | "API" | "Unit"
-    command: String,   // "playwright" | "vitest"
-    args: Vec<String>,
-    cwd: String,       // path relative to project root where command runs
+pub(crate) struct Suite {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) system: String,
+    pub(crate) tag: String,       // "E2E" | "API" | "Unit"
+    pub(crate) command: String,   // "playwright" | "vitest"
+    pub(crate) args: Vec<String>,
+    pub(crate) cwd: String,       // path relative to project root where command runs
+}
+
+/// Everything needed to execute a suite — built either from the `run_suite`
+/// command (frontend) or by the scheduler from data persisted in the DB.
+#[derive(Debug, Clone)]
+pub(crate) struct ExecParams {
+    pub(crate) project_id:    String,
+    pub(crate) project_name:  String,
+    pub(crate) project_path:  String,
+    pub(crate) suite_id:      String,
+    pub(crate) suite_name:    String,
+    pub(crate) suite_tag:     String,
+    pub(crate) suite_command: String,
+    pub(crate) suite_cwd:     String,
+    pub(crate) suite_args:    Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +145,11 @@ fn init_db(conn: &Connection) {
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS schedules (
             id           TEXT PRIMARY KEY,
             project_id   TEXT NOT NULL,
@@ -161,13 +184,41 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-fn now_iso() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Simple ISO-8601 approximation via SQLite datetime
-    format!("datetime({}, 'unixepoch')", now)
+/// Atualiza os contadores de pass/fail a partir de uma linha de output do
+/// runner (Playwright line-reporter, Vitest/Jest/Mocha unicode, sumários).
+fn update_counts_from_line(line: &str, pass_count: &mut i64, fail_count: &mut i64) {
+    let t = line.trim_start();
+    // Unicode check marks (Jest/Vitest/Mocha)
+    if t.starts_with('✓') || t.starts_with('✔') { *pass_count += 1; }
+    // Unicode cross marks (Jest/Vitest/Mocha)
+    if t.starts_with('✗') || t.starts_with('×') { *fail_count += 1; }
+    // Playwright line-reporter: "ok  N [worker] > ..."
+    if t.starts_with("ok ") {
+        let rest = t[3..].trim_start();
+        if rest.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            *pass_count += 1;
+        }
+    }
+    // Playwright line-reporter: "not ok  N [worker] > ..." or TAP fails
+    if t.starts_with("not ok") { *fail_count += 1; }
+    // Summary lines: "25 passed", "3 failed"
+    // (overwrite if summary is higher — catches Cypress/Playwright totals)
+    if let Some(idx) = t.find(" passed") {
+        let before = &t[..idx];
+        if let Some(n) = before.split_whitespace().last()
+            .and_then(|s| s.parse::<i64>().ok())
+        {
+            if n > *pass_count { *pass_count = n; }
+        }
+    }
+    if let Some(idx) = t.find(" failed") {
+        let before = &t[..idx];
+        if let Some(n) = before.split_whitespace().last()
+            .and_then(|s| s.parse::<i64>().ok())
+        {
+            if n > *fail_count { *fail_count = n; }
+        }
+    }
 }
 
 fn read_coverage(project_path: &str, suite_cwd: &str) -> Option<f64> {
@@ -320,7 +371,10 @@ async fn pick_folder() -> Option<String> {
 // ── File save dialog ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-async fn save_pdf(filename: String, data: Vec<u8>) -> Result<String, String> {
+async fn save_pdf(filename: String, data: String) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let bytes = STANDARD.decode(&data).map_err(|e| e.to_string())?;
+
     let path = tokio::task::spawn_blocking(move || {
         let ext = filename.rsplit('.').next().unwrap_or("pdf");
         let (title, filter_name) = match ext {
@@ -338,7 +392,7 @@ async fn save_pdf(filename: String, data: Vec<u8>) -> Result<String, String> {
 
     match path {
         Some(p) => {
-            std::fs::write(&p, &data).map_err(|e| e.to_string())?;
+            std::fs::write(&p, &bytes).map_err(|e| e.to_string())?;
             Ok(p.to_string_lossy().to_string())
         }
         None => Err("cancelado".to_string()),
@@ -577,7 +631,6 @@ fn scan_project(path: String) -> Result<Vec<Suite>, String> {
 #[tauri::command]
 async fn run_suite(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
     project_id: String,
     project_name: String,
     project_path: String,
@@ -588,6 +641,65 @@ async fn run_suite(
     suite_cwd: String,
     suite_args: Vec<String>,
 ) -> Result<(), String> {
+    execute_suite(&app, ExecParams {
+        project_id, project_name, project_path,
+        suite_id, suite_name, suite_tag,
+        suite_command, suite_cwd, suite_args,
+    });
+    Ok(())
+}
+
+/// Builds the platform-specific command that runs a suite.
+fn build_suite_command(suite_command: &str, suite_args: &[String], cwd: &PathBuf) -> Command {
+    #[cfg(windows)]
+    let mut cmd = {
+        // npm/npx are .cmd batch files on Windows — they need cmd.exe
+        let mut c = Command::new("cmd");
+        c.arg("/C");
+        if suite_command == "npm" {
+            c.arg("npm");
+        } else {
+            c.arg("npx");
+            c.arg(suite_command);
+        }
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        if suite_command == "npm" {
+            Command::new("npm")
+        } else {
+            let mut c = Command::new("npx");
+            c.arg(suite_command);
+            c
+        }
+    };
+
+    cmd.args(suite_args);
+    cmd.current_dir(cwd);
+    cmd.env("FORCE_COLOR", "0");
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    #[cfg(unix)]
+    cmd.process_group(0); // own process group → stop_suite can kill the whole tree
+
+    cmd
+}
+
+/// Runs a suite end-to-end: spawns the process, streams output as events,
+/// parses pass/fail counts and persists the result. Shared by the `run_suite`
+/// command and the scheduler, so scheduled runs work without the webview.
+pub(crate) fn execute_suite(app: &tauri::AppHandle, p: ExecParams) {
+    let state = app.state::<AppState>();
+    let ExecParams {
+        project_id, project_name, project_path,
+        suite_id, suite_name, suite_tag,
+        suite_command, suite_cwd, suite_args,
+    } = p;
+
     // Cancel previous run
     {
         let mut running = state.running.lock().unwrap();
@@ -636,10 +748,10 @@ async fn run_suite(
         PathBuf::from(&project_path).join(&suite_cwd)
     };
 
-    // Clone app — AppHandle is 'static and can be moved into tokio::spawn
+    // Clone app — AppHandle is 'static and can be moved into the spawned task
     let app_task = app.clone();
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let app = app_task;
         let start = std::time::Instant::now();
         let sid = suite_id.clone();
@@ -647,22 +759,7 @@ async fn run_suite(
         // Access state through AppHandle inside the task (lifetime is 'static here)
         let state = app.state::<AppState>();
 
-        let mut cmd = Command::new("cmd");
-        cmd.arg("/C");
-        if suite_command == "npm" {
-            cmd.arg("npm");
-        } else {
-            cmd.arg("npx");
-            cmd.arg(&suite_command);
-        }
-        cmd.args(&suite_args);
-        cmd.current_dir(&pw_dir);
-        cmd.env("FORCE_COLOR", "0");
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        cmd.kill_on_drop(true);
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let mut cmd = build_suite_command(&suite_command, &suite_args, &pw_dir);
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -693,9 +790,7 @@ async fn run_suite(
                         let s = app_out.state::<AppState>();
                         let mut meta = s.run_meta.lock().unwrap();
                         if let Some(m) = meta.get_mut(&sid_out) {
-                            let t = clean.trim_start();
-                            if t.starts_with('✓') || t.starts_with('✔') { m.pass_count += 1; }
-                            if t.starts_with('✗') || t.starts_with('×') { m.fail_count += 1; }
+                            update_counts_from_line(&clean, &mut m.pass_count, &mut m.fail_count);
                             m.output_lines.push(clean.clone());
                         }
                     }
@@ -753,8 +848,6 @@ async fn run_suite(
         // Remove from running map
         state.running.lock().unwrap().remove(&suite_id);
     });
-
-    Ok(())
 }
 
 fn save_run_to_db(app: &tauri::AppHandle, suite_id: &str, status: &str, duration_ms: u64) {
@@ -791,10 +884,18 @@ async fn stop_suite(state: State<'_, AppState>, suite_id: String) -> Result<(), 
         meta.get(&suite_id).and_then(|m| m.pid)
     };
 
-    // Kill the entire process tree (works on Windows where child.kill() is not enough)
+    // Kill the entire process tree — child.kill() alone leaves grandchildren
+    // (node spawned by npm/npx) running on both platforms
     if let Some(pid) = pid {
+        #[cfg(windows)]
         let _ = tokio::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output()
+            .await;
+        #[cfg(not(windows))]
+        // Spawned with process_group(0), so pgid == pid; negative pid kills the group
+        let _ = tokio::process::Command::new("kill")
+            .args(["-9", &format!("-{}", pid)])
             .output()
             .await;
     }
@@ -805,10 +906,96 @@ async fn stop_suite(state: State<'_, AppState>, suite_id: String) -> Result<(), 
     Ok(())
 }
 
+// ── Autostart ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    if enabled { autolaunch.enable() } else { autolaunch.disable() }
+        .map_err(|e| e.to_string())
+}
+
+/// Liga o autostart uma única vez, no primeiro boot. Depois disso quem manda
+/// é a escolha do usuário (toggle na UI) — nunca religamos sozinhos.
+fn configure_autostart_once(app: &tauri::App, conn: &Connection) {
+    let configured = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'autostart_configured'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .is_ok();
+    if configured { return; }
+
+    if app.autolaunch().enable().is_ok() {
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('autostart_configured', '1')",
+            [],
+        );
+    }
+}
+
+// ── System tray ───────────────────────────────────────────────────────────────
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open_item    = MenuItem::with_id(app, "open",    "Abrir",                     true, None::<&str>)?;
+    let run_due_item = MenuItem::with_id(app, "run-due", "Executar agendados agora",  true, None::<&str>)?;
+    let quit_item    = MenuItem::with_id(app, "quit",    "Sair",                      true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open_item, &run_due_item, &quit_item])?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(app.default_window_icon().expect("bundled window icon missing").clone())
+        .tooltip("TestRunner")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open"    => show_main_window(app),
+            "run-due" => scheduler::check_and_fire(app),
+            "quit"    => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Clique esquerdo abre a janela. No Linux (appindicator) eventos de
+            // clique não são entregues — lá o item "Abrir" do menu cobre isso.
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
     tauri::Builder::default()
+        // Deve ser o primeiro plugin: uma segunda instância só foca a existente
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .setup(|app| {
             let db_path = db_path(&app.handle());
             if let Some(parent) = db_path.parent() {
@@ -817,13 +1004,30 @@ fn main() {
             let conn = Connection::open(&db_path)
                 .expect("failed to open database");
             init_db(&conn);
+            configure_autostart_once(app, &conn);
             app.manage(AppState {
                 db:       Mutex::new(conn),
                 running:  Mutex::new(HashMap::new()),
                 run_meta: Mutex::new(HashMap::new()),
             });
+            setup_tray(app)?;
             scheduler::start_scheduler_loop(app.handle().clone());
+
+            // A janela é criada oculta (visible: false no tauri.conf.json).
+            // Boot normal mostra; boot via autostart (--hidden) fica só na bandeja.
+            let start_hidden = std::env::args().any(|a| a == "--hidden");
+            if !start_hidden {
+                show_main_window(&app.handle());
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Fechar a janela esconde para a bandeja — o processo (e o
+            // scheduler) continua vivo. Sair de verdade é pelo menu da bandeja.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             pick_folder,
@@ -836,6 +1040,8 @@ fn main() {
             stop_suite,
             get_runs,
             get_run_output,
+            get_autostart,
+            set_autostart,
             scheduler::get_schedules,
             scheduler::save_schedule,
             scheduler::delete_schedule,
@@ -843,4 +1049,109 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── strip_ansi ────────────────────────────────────────────────────────
+
+    #[test]
+    fn strip_ansi_removes_escape_sequences() {
+        assert_eq!(strip_ansi("\x1b[32m✓ passou\x1b[0m"), "✓ passou");
+        assert_eq!(strip_ansi("\x1b[1;31merro\x1b[0m fatal"), "erro fatal");
+    }
+
+    #[test]
+    fn strip_ansi_removes_carriage_returns() {
+        assert_eq!(strip_ansi("linha\r\n".trim_end_matches('\n')), "linha");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_plain_text() {
+        assert_eq!(strip_ansi("ok  1 [chromium] > login"), "ok  1 [chromium] > login");
+    }
+
+    // ── update_counts_from_line ───────────────────────────────────────────
+
+    fn count(lines: &[&str]) -> (i64, i64) {
+        let (mut pass, mut fail) = (0, 0);
+        for l in lines { update_counts_from_line(l, &mut pass, &mut fail); }
+        (pass, fail)
+    }
+
+    #[test]
+    fn counts_unicode_marks() {
+        assert_eq!(count(&["✓ soma", "✔ subtração", "✗ divisão", "× módulo"]), (2, 2));
+    }
+
+    #[test]
+    fn counts_playwright_line_reporter() {
+        assert_eq!(
+            count(&[
+                "ok  1 [chromium] > login.spec.ts > deve logar",
+                "ok  2 [chromium] > login.spec.ts > deve deslogar",
+                "not ok  3 [chromium] > cart.spec.ts > checkout",
+            ]),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn ok_without_number_is_not_a_test() {
+        // "ok " seguido de texto não numérico não é resultado de teste
+        assert_eq!(count(&["ok tudo certo por aqui"]), (0, 0));
+    }
+
+    #[test]
+    fn summary_overrides_lower_counts() {
+        // Contagem linha-a-linha perdeu testes; o sumário corrige para cima
+        assert_eq!(count(&["✓ um", "25 passed (30s)", "3 failed"]), (25, 3));
+    }
+
+    #[test]
+    fn summary_does_not_lower_counts() {
+        let (mut pass, mut fail) = (10, 5);
+        update_counts_from_line("2 passed", &mut pass, &mut fail);
+        update_counts_from_line("1 failed", &mut pass, &mut fail);
+        assert_eq!((pass, fail), (10, 5));
+    }
+
+    // ── read_coverage ─────────────────────────────────────────────────────
+
+    #[test]
+    fn read_coverage_parses_summary_json() {
+        let dir = std::env::temp_dir().join(format!("testrunner-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("coverage")).unwrap();
+        std::fs::write(
+            dir.join("coverage").join("coverage-summary.json"),
+            r#"{"total":{"lines":{"total":100,"covered":85,"pct":85.5}}}"#,
+        ).unwrap();
+
+        let pct = read_coverage(&dir.to_string_lossy(), "");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(pct, Some(85.5));
+    }
+
+    #[test]
+    fn read_coverage_none_when_missing() {
+        assert_eq!(read_coverage("Z:/caminho/que/nao/existe", ""), None);
+    }
+
+    #[test]
+    fn read_coverage_joins_suite_cwd() {
+        let dir = std::env::temp_dir().join(format!("testrunner-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("web").join("coverage")).unwrap();
+        std::fs::write(
+            dir.join("web").join("coverage").join("coverage-summary.json"),
+            r#"{"total":{"lines":{"pct":42.0}}}"#,
+        ).unwrap();
+
+        let pct = read_coverage(&dir.to_string_lossy(), "web");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(pct, Some(42.0));
+    }
 }
