@@ -2,29 +2,35 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:       #0d1117;
-  --bg-deep:  #010409;
-  --bg-card:  #161b22;
-  --bg-hover: #1f2937;
-  --sidebar:  #0d1520;
-  --border:   #21262d;
-  --border-hi:#30363d;
+  /* Tema preto & verde — fundos quase pretos com tom esverdeado */
+  --bg:       #0a0e0a;
+  --bg-deep:  #050705;
+  --bg-card:  #101510;
+  --bg-hover: #1c261c;
+  --sidebar:  #070b07;
+  --border:   #1a231a;
+  --border-hi:#2a352a;
 
-  --text:     #e6edf3;
-  --muted:    #8b949e;
-  --dim:      #484f58;
+  --text:     #e4efe4;
+  --muted:    #8fa38f;
+  --dim:      #4a5a4a;
 
-  --green:    #3fb950;
-  --red:      #f85149;
-  --amber:    #d29922;
-  --blue:     #58a6ff;
-  --purple:   #bc8cff;
+  /* Acento da marca (logo, seleção, botões, foco) */
+  --accent:    #2ee672;
+  --accent-bg: rgba(46,230,114,.12);
 
-  --green-bg: rgba(63,185,80,.12);
-  --red-bg:   rgba(248,81,73,.12);
-  --amber-bg: rgba(210,153,34,.12);
-  --blue-bg:   rgba(88,166,255,.12);
-  --purple-bg: rgba(188,140,255,.12);
+  --green:    #2ee672;
+  --red:      #e05252;
+  --amber:    #d9a62a;
+  /* Legado: --blue era o acento; --purple vira teal (badges/API) */
+  --blue:     var(--accent);
+  --purple:   #2dd4bf;
+
+  --green-bg: rgba(46,230,114,.12);
+  --red-bg:   rgba(224,82,82,.12);
+  --amber-bg: rgba(217,166,42,.12);
+  --blue-bg:   var(--accent-bg);
+  --purple-bg: rgba(45,212,191,.12);
 
   --sidebar-w: 264px;
   --tabs-h:    38px;
@@ -209,7 +215,7 @@ html, body, #app {
   transition: background .15s;
 }
 .suite-row:hover { background: rgba(255,255,255,.04); }
-.suite-row.active { background: rgba(88,166,255,.08); }
+.suite-row.active { background: rgba(46,230,114,.08); }
 .suite-row.active::before { background: var(--blue); }
 
 .suite-dot {
@@ -278,8 +284,8 @@ html, body, #app {
   flex-shrink: 0;
 }
 .tag.tag-e2e    { background: var(--blue-bg);   color: var(--blue); }
-.tag.tag-api    { background: rgba(188,140,255,.15); color: var(--purple); }
-.tag.tag-unit   { background: var(--green-bg);  color: var(--green); }
+.tag.tag-api    { background: rgba(45,212,191,.15); color: var(--purple); }
+.tag.tag-unit   { background: rgba(163,230,53,.14);  color: #a3e635; }
 .tag.sm { height: 14px; font-size: 9px; }
 
 /* ── Main ────────────────────────────────────────────────────────────────── */
@@ -607,11 +613,11 @@ html, body, #app {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--dim);
 }
-.status-badge.running  { background: var(--amber-bg); color: var(--amber); border-color: rgba(210,153,34,.3); }
+.status-badge.running  { background: var(--amber-bg); color: var(--amber); border-color: rgba(217,166,42,.3); }
 .status-badge.running .status-dot { background: var(--amber); animation: pulse 1.4s infinite; }
-.status-badge.passed   { background: var(--green-bg);  color: var(--green); border-color: rgba(63,185,80,.3); }
+.status-badge.passed   { background: var(--green-bg);  color: var(--green); border-color: rgba(46,230,114,.3); }
 .status-badge.passed .status-dot  { background: var(--green); }
-.status-badge.failed   { background: var(--red-bg);    color: var(--red);   border-color: rgba(248,81,73,.3); }
+.status-badge.failed   { background: var(--red-bg);    color: var(--red);   border-color: rgba(224,82,82,.3); }
 .status-badge.failed .status-dot  { background: var(--red); }
 .status-badge.stopped  { color: var(--muted); }
 
@@ -656,7 +662,7 @@ html, body, #app {
 }
 .act-btn:hover { background: var(--bg-hover); border-color: var(--text); }
 .act-btn:disabled { opacity: .5; cursor: not-allowed; }
-.act-btn.danger { color: var(--red); border-color: rgba(248,81,73,.4); }
+.act-btn.danger { color: var(--red); border-color: rgba(224,82,82,.4); }
 .act-btn.danger:hover { background: var(--red-bg); border-color: var(--red); }
 
 /* Stats bar */
@@ -694,11 +700,11 @@ html, body, #app {
   letter-spacing: .06em;
 }
 .stat.pass .stat-num { color: var(--green); }
-.stat.pass .stat-lbl { color: rgba(63,185,80,.6); }
+.stat.pass .stat-lbl { color: rgba(46,230,114,.6); }
 .stat.fail .stat-num { color: var(--red); }
-.stat.fail .stat-lbl { color: rgba(248,81,73,.6); }
+.stat.fail .stat-lbl { color: rgba(224,82,82,.6); }
 .stat.pending .stat-num { color: var(--amber); }
-.stat.pending .stat-lbl { color: rgba(210,153,34,.6); }
+.stat.pending .stat-lbl { color: rgba(217,166,42,.6); }
 .stat.total .stat-num { color: var(--muted); }
 .stat.total .stat-lbl { color: var(--dim); }
 
@@ -781,7 +787,7 @@ html, body, #app {
 /* ── Modal ───────────────────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed; inset: 0;
-  background: rgba(1,4,9,.75);
+  background: rgba(3,5,3,.75);
   backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
@@ -848,7 +854,7 @@ html, body, #app {
 .form-group input::placeholder { color: var(--dim); }
 .form-group input:focus {
   border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgba(88,166,255,.12);
+  box-shadow: 0 0 0 3px rgba(46,230,114,.12);
 }
 
 .path-row { display: flex; gap: 8px; }
@@ -894,14 +900,14 @@ html, body, #app {
   border: 1px solid;
   line-height: 1.5;
 }
-.verify-result.ok    { background: var(--green-bg); border-color: rgba(63,185,80,.3);  color: var(--green); }
-.verify-result.error { background: var(--red-bg);   border-color: rgba(248,81,73,.3);  color: var(--red); }
+.verify-result.ok    { background: var(--green-bg); border-color: rgba(46,230,114,.3);  color: var(--green); }
+.verify-result.error { background: var(--red-bg);   border-color: rgba(224,82,82,.3);  color: var(--red); }
 
 /* Buttons */
 .btn-primary {
   padding: 8px 18px;
-  background: var(--blue); border: none; border-radius: var(--radius);
-  color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+  background: var(--accent); border: none; border-radius: var(--radius);
+  color: #04240f; font-size: 13px; font-weight: 600; cursor: pointer;
   transition: opacity .15s;
 }
 .btn-primary:hover:not(:disabled) { opacity: .88; }
@@ -917,7 +923,7 @@ html, body, #app {
 
 .btn-danger {
   padding: 8px 14px;
-  background: transparent; border: 1px solid rgba(248,81,73,.4); border-radius: var(--radius);
+  background: transparent; border: 1px solid rgba(224,82,82,.4); border-radius: var(--radius);
   color: var(--red); font-size: 13px; cursor: pointer;
   transition: background .15s, border-color .15s;
 }
@@ -964,8 +970,8 @@ html, body, #app {
   margin-left: auto;
   font-size: 9px;
   font-weight: 700;
-  background: var(--blue);
-  color: #fff;
+  background: var(--accent);
+  color: #04240f;
   border-radius: 8px;
   padding: 0 5px;
   height: 14px;
@@ -1268,10 +1274,10 @@ html, body, #app {
   background: linear-gradient(90deg, rgba(48,54,61,.8), rgba(48,54,61,.5));
 }
 .bar-curr {
-  background: linear-gradient(90deg, var(--red), rgba(248,81,73,.6));
+  background: linear-gradient(90deg, var(--red), rgba(224,82,82,.6));
 }
 .bar-curr.zero {
-  background: linear-gradient(90deg, var(--green), rgba(63,185,80,.6));
+  background: linear-gradient(90deg, var(--green), rgba(46,230,114,.6));
   min-width: 6px;
 }
 .bar-num {
