@@ -67,6 +67,7 @@ struct TestRun {
     fail_count: i64,
     started_at: String,
     coverage_pct: Option<f64>,
+    total_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +104,7 @@ struct RunMeta {
     started_at:   String,
     pass_count:   i64,
     fail_count:   i64,
+    total_count:  Option<i64>,
     pid:          Option<u32>,
     output_lines: Vec<String>,
     project_path: String,
@@ -166,6 +168,7 @@ fn init_db(conn: &Connection) {
     // Migration: add output column (ignored if already exists)
     let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN output TEXT", []);
     let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN coverage_pct REAL", []);
+    let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN total_count INTEGER", []);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -399,6 +402,43 @@ async fn preflight_suite(
     issues
 }
 
+/// Extrai o total planejado/executado de testes de uma linha de output.
+/// Playwright anuncia no início ("Running 24 tests using 4 workers");
+/// Vitest ("Tests  2 failed | 17 passed (19)") e Jest
+/// ("Tests: 1 failed, 24 passed, 25 total") só no sumário final.
+fn parse_total_from_line(line: &str) -> Option<i64> {
+    let t = line.trim();
+    if is_build_noise(t) { return None; }
+
+    // Playwright: "Running N test(s) ..."
+    if let Some(rest) = t.strip_prefix("Running ") {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() && rest[digits.len()..].trim_start().starts_with("test") {
+            return digits.parse().ok();
+        }
+    }
+
+    // Vitest/Jest: linha de sumário "Tests ..." (não confundir com "Test Files")
+    if t.starts_with("Tests ") || t.starts_with("Tests:") {
+        // Vitest: total entre parênteses no fim — "... (19)"
+        if let Some(open) = t.rfind('(') {
+            if let Some(close) = t[open..].find(')') {
+                if let Ok(n) = t[open + 1..open + close].trim().parse::<i64>() {
+                    return Some(n);
+                }
+            }
+        }
+        // Jest: "..., 25 total"
+        if let Some(idx) = t.find(" total") {
+            if let Some(n) = t[..idx].split_whitespace().last().and_then(|s| s.parse::<i64>().ok()) {
+                return Some(n);
+            }
+        }
+    }
+
+    None
+}
+
 fn read_coverage(project_path: &str, suite_cwd: &str) -> Option<f64> {
     let base = if suite_cwd.is_empty() {
         PathBuf::from(project_path)
@@ -482,13 +522,14 @@ fn get_runs(state: State<'_, AppState>, project_id: Option<String>) -> Result<Ve
             fail_count:   row.get(9)?,
             started_at:   row.get(10)?,
             coverage_pct: row.get(11)?,
+            total_count:  row.get(12)?,
         })
     };
 
     let runs: Vec<TestRun> = if let Some(pid) = project_id {
         let mut stmt = db.prepare(
             "SELECT id,project_id,project_name,suite_id,suite_name,suite_tag,status,\
-             duration_ms,pass_count,fail_count,started_at,coverage_pct \
+             duration_ms,pass_count,fail_count,started_at,coverage_pct,total_count \
              FROM test_runs WHERE project_id=?1 ORDER BY started_at DESC LIMIT 500"
         ).map_err(|e| e.to_string())?;
         let rows: Vec<TestRun> = stmt.query_map(params![pid], map_row)
@@ -499,7 +540,7 @@ fn get_runs(state: State<'_, AppState>, project_id: Option<String>) -> Result<Ve
     } else {
         let mut stmt = db.prepare(
             "SELECT id,project_id,project_name,suite_id,suite_name,suite_tag,status,\
-             duration_ms,pass_count,fail_count,started_at,coverage_pct \
+             duration_ms,pass_count,fail_count,started_at,coverage_pct,total_count \
              FROM test_runs ORDER BY started_at DESC LIMIT 500"
         ).map_err(|e| e.to_string())?;
         let rows: Vec<TestRun> = stmt.query_map([], map_row)
@@ -907,6 +948,7 @@ pub(crate) fn execute_suite(app: &tauri::AppHandle, p: ExecParams) {
         started_at: started_at.clone(),
         pass_count: 0,
         fail_count: 0,
+        total_count: None,
         pid: None,
         output_lines: Vec::new(),
         project_path: project_path.clone(),
@@ -996,6 +1038,9 @@ pub(crate) fn execute_suite(app: &tauri::AppHandle, p: ExecParams) {
                         let mut meta = s.run_meta.lock().unwrap();
                         if let Some(m) = meta.get_mut(&sid_out) {
                             update_counts_from_line(&clean, &mut m.pass_count, &mut m.fail_count);
+                            if let Some(n) = parse_total_from_line(&clean) {
+                                m.total_count = Some(n.max(m.total_count.unwrap_or(0)));
+                            }
                             m.output_lines.push(clean.clone());
                         }
                     }
@@ -1066,14 +1111,16 @@ fn save_run_to_db(app: &tauri::AppHandle, suite_id: &str, status: &str, duration
         let output_json = serde_json::to_string(&m.output_lines).unwrap_or_default();
         let coverage = read_coverage(&m.project_path, &m.suite_cwd);
         let db = state.db.lock().unwrap();
+        // Sem total anunciado pelo runner, o melhor palpite é pass+fail
+        let total = m.total_count.unwrap_or(m.pass_count + m.fail_count);
         let _ = db.execute(
-            "INSERT INTO test_runs (id,project_id,project_name,suite_id,suite_name,suite_tag,status,duration_ms,pass_count,fail_count,started_at,output,coverage_pct)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime(?11,'unixepoch'),?12,?13)",
+            "INSERT INTO test_runs (id,project_id,project_name,suite_id,suite_name,suite_tag,status,duration_ms,pass_count,fail_count,started_at,output,coverage_pct,total_count)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime(?11,'unixepoch'),?12,?13,?14)",
             params![
                 m.run_id, m.project_id, m.project_name,
                 suite_id, m.suite_name, m.suite_tag,
                 status, duration_ms as i64, m.pass_count, m.fail_count,
-                m.started_at, output_json, coverage
+                m.started_at, output_json, coverage, total
             ],
         );
         // Emit updated history to frontend
@@ -1338,6 +1385,38 @@ mod tests {
         update_counts_from_line("2 passed", &mut pass, &mut fail);
         update_counts_from_line("1 failed", &mut pass, &mut fail);
         assert_eq!((pass, fail), (10, 5));
+    }
+
+    // ── parse_total_from_line ─────────────────────────────────────────────
+
+    #[test]
+    fn total_from_playwright_running_line() {
+        assert_eq!(parse_total_from_line("Running 24 tests using 4 workers"), Some(24));
+        assert_eq!(parse_total_from_line("Running 1 test using 1 worker"), Some(1));
+    }
+
+    #[test]
+    fn total_from_vitest_summary() {
+        assert_eq!(parse_total_from_line("      Tests  2 failed | 17 passed (19)"), Some(19));
+        assert_eq!(parse_total_from_line(" Tests  19 passed (19)"), Some(19));
+    }
+
+    #[test]
+    fn total_from_jest_summary() {
+        assert_eq!(parse_total_from_line("Tests: 1 failed, 24 passed, 25 total"), Some(25));
+    }
+
+    #[test]
+    fn total_ignores_test_files_line() {
+        // "Test Files  3 passed (3)" conta arquivos, não testes
+        assert_eq!(parse_total_from_line(" Test Files  3 passed (3)"), None);
+    }
+
+    #[test]
+    fn total_ignores_unrelated_lines() {
+        assert_eq!(parse_total_from_line("✓ 2658 modules transformed."), None);
+        assert_eq!(parse_total_from_line("Running the dev server on :3000"), None);
+        assert_eq!(parse_total_from_line("ok  3 [chromium] > spec > nome"), None);
     }
 
     // ── extract_base_url / host_port (preflight) ──────────────────────────

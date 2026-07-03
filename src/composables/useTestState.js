@@ -140,9 +140,20 @@ function appendLine(suiteId, text) {
     if (cls === 'l-pass') r.passCount++
     else if (cls === 'l-fail') r.failCount++
 
-    // Total count from "Running N test(s)"
+    // Total count from "Running N test(s)" (Playwright, anunciado no início)
     const mRun = text.match(/Running\s+(\d+)\s+test/i)
     if (mRun && r.totalCount == null) r.totalCount = parseInt(mRun[1])
+
+    // Sumários do Vitest ("Tests  2 failed | 17 passed (19)") e do
+    // Jest ("Tests: 1 failed, 24 passed, 25 total") — não confundir
+    // com a linha "Test Files" do Vitest, que conta arquivos
+    const tt = text.trim()
+    if (/^Tests[\s:]/.test(tt)) {
+      const mParen = tt.match(/\((\d+)\)\s*$/)
+      if (mParen) r.totalCount = Math.max(r.totalCount ?? 0, parseInt(mParen[1]))
+      const mTotal = tt.match(/(\d+)\s+total/)
+      if (mTotal) r.totalCount = Math.max(r.totalCount ?? 0, parseInt(mTotal[1]))
+    }
 
     // Summary lines — corrige contadores se a deteccao linha-a-linha falhou
     const mSumPass = text.match(/(\d+)\s+passed/i)

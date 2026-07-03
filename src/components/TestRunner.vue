@@ -234,7 +234,7 @@ async function openHistoryRun(run) {
     duration:   run.durationMs,
     passCount:  run.passCount,
     failCount:  run.failCount,
-    totalCount: run.passCount + run.failCount,
+    totalCount: run.totalCount ?? (run.passCount + run.failCount),
     stopping:   false,
     projectId:  run.projectId,
   }
