@@ -9,7 +9,7 @@
             <path d="M12 2L3 7v10l9 5 9-5V7L12 2z" stroke-linejoin="round"/>
             <path d="M12 2v20M3 7l9 5 9-5" stroke-linejoin="round"/>
           </svg>
-          <span>Report<b>Test</b></span>
+          <span>Test<b>Runner</b></span>
         </div>
         <button class="add-btn" @click="openModal()" title="Novo projeto">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
