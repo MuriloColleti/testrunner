@@ -221,6 +221,172 @@ fn update_counts_from_line(line: &str, pass_count: &mut i64, fail_count: &mut i6
     }
 }
 
+// ── Preflight validation ──────────────────────────────────────────────────────
+
+const PW_CONFIGS: &[&str] = &["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"];
+const VITEST_CONFIGS: &[&str] = &["vitest.config.ts", "vitest.config.js", "vitest.config.mjs", "vitest.config.cjs"];
+
+struct PreflightIssue {
+    fatal: bool,
+    message: String,
+}
+
+fn issue(fatal: bool, message: String) -> PreflightIssue {
+    PreflightIssue { fatal, message }
+}
+
+/// Extrai a primeira baseURL http(s) citada no conteúdo de um playwright.config.
+/// Heurística de texto — cobre `baseURL: 'http://...'` e o padrão
+/// `baseURL: process.env.X || 'http://...'`.
+fn extract_base_url(config: &str) -> Option<String> {
+    let mut rest = config;
+    while let Some(idx) = rest.find("baseURL") {
+        let after = &rest[idx + "baseURL".len()..];
+        let mut limit = after.len().min(200);
+        while !after.is_char_boundary(limit) { limit -= 1; }
+        let window = &after[..limit];
+        if let Some(q) = window.find(['\'', '"', '`']) {
+            let quote = window[q..].chars().next().unwrap();
+            let body = &window[q + quote.len_utf8()..];
+            if let Some(end) = body.find(quote) {
+                let url = &body[..end];
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    return Some(url.to_string());
+                }
+            }
+        }
+        rest = after;
+    }
+    None
+}
+
+/// Host local = a aplicação precisa estar rodando NESTA máquina; se não
+/// responde, o teste certamente falharia. Host remoto pode estar atrás de
+/// firewall/VPN e ainda funcionar — não deve bloquear a execução.
+fn is_local_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host.starts_with("127.")
+        || host == "0.0.0.0"
+        || host == "::1"
+        || host == "[::1]"
+}
+
+/// Separa host e porta de uma URL http(s), com porta padrão por esquema.
+fn host_port(url: &str) -> Option<(String, u16)> {
+    let (rest, default_port) = url.strip_prefix("https://").map(|r| (r, 443u16))
+        .or_else(|| url.strip_prefix("http://").map(|r| (r, 80u16)))?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    if authority.is_empty() { return None; }
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        if let Ok(port) = port.parse::<u16>() {
+            return Some((host.to_string(), port));
+        }
+    }
+    Some((authority.to_string(), default_port))
+}
+
+/// Valida estrutura do projeto e disponibilidade de servidores antes de rodar
+/// a suite. Issues fatais abortam a execução com o motivo no terminal.
+async fn preflight_suite(
+    project_path: &str,
+    suite_cwd: &str,
+    suite_command: &str,
+    suite_args: &[String],
+    suite_tag: &str,
+) -> Vec<PreflightIssue> {
+    let mut issues: Vec<PreflightIssue> = Vec::new();
+
+    let root = PathBuf::from(project_path);
+    if !root.exists() {
+        issues.push(issue(true, format!("[ERRO] Pasta do projeto não encontrada: {}", project_path)));
+        return issues;
+    }
+
+    let dir = if suite_cwd.is_empty() { root.clone() } else { root.join(suite_cwd) };
+    if !dir.exists() {
+        issues.push(issue(true, format!("[ERRO] Pasta da suite não encontrada: {}", dir.display())));
+        return issues;
+    }
+
+    // Estrutura esperada pelo runner
+    match suite_command {
+        "playwright" => {
+            if !PW_CONFIGS.iter().any(|f| dir.join(f).exists()) {
+                issues.push(issue(true, format!("[ERRO] playwright.config não encontrado em {}", dir.display())));
+            }
+        }
+        "vitest" => {
+            if !VITEST_CONFIGS.iter().any(|f| dir.join(f).exists()) {
+                issues.push(issue(true, format!("[ERRO] vitest.config não encontrado em {}", dir.display())));
+            }
+        }
+        "npm" => {
+            let script = suite_args.get(1).cloned().unwrap_or_default();
+            match std::fs::read_to_string(dir.join("package.json")) {
+                Ok(content) => {
+                    let has_script = serde_json::from_str::<serde_json::Value>(&content).ok()
+                        .and_then(|p| p.get("scripts")?.get(&script).map(|_| ()))
+                        .is_some();
+                    if !has_script {
+                        issues.push(issue(true, format!(
+                            "[ERRO] Script \"{}\" não existe no package.json de {}", script, dir.display()
+                        )));
+                    }
+                }
+                Err(_) => issues.push(issue(true, format!("[ERRO] package.json não encontrado em {}", dir.display()))),
+            }
+        }
+        _ => {}
+    }
+
+    // Dependências instaladas
+    if !dir.join("node_modules").exists() && !root.join("node_modules").exists() {
+        issues.push(issue(true, format!(
+            "[ERRO] node_modules não encontrado — rode \"npm install\" em {}", dir.display()
+        )));
+    }
+
+    // Servidor no ar para suites Playwright (E2E/API) sem webServer gerenciado
+    if suite_command == "playwright" {
+        let cfg = PW_CONFIGS.iter()
+            .find(|f| dir.join(f).exists())
+            .and_then(|f| std::fs::read_to_string(dir.join(f)).ok());
+        if let Some(cfg) = cfg {
+            if cfg.contains("webServer") {
+                issues.push(issue(false, "[OK] webServer configurado — o Playwright sobe a aplicação sozinho".into()));
+            } else if let Some(url) = extract_base_url(&cfg) {
+                if let Some((host, port)) = host_port(&url) {
+                    let reachable = tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        tokio::net::TcpStream::connect((host.as_str(), port)),
+                    ).await.map(|r| r.is_ok()).unwrap_or(false);
+                    if reachable {
+                        issues.push(issue(false, format!("[OK] Aplicação respondendo em {}", url)));
+                    } else if is_local_host(&host) {
+                        issues.push(issue(true, format!(
+                            "[ERRO] Aplicação não está respondendo em {} — inicie o servidor local antes de rodar testes {}",
+                            url, suite_tag
+                        )));
+                    } else {
+                        // Servidor remoto: sonda TCP pode falhar por firewall/VPN
+                        // mesmo com a aplicação no ar — avisa mas não bloqueia
+                        issues.push(issue(false, format!(
+                            "[AVISO] Sem resposta de {} (servidor remoto) — prosseguindo mesmo assim",
+                            url
+                        )));
+                    }
+                }
+            } else {
+                issues.push(issue(false,
+                    "[AVISO] baseURL não encontrada no playwright.config — verificação de servidor ignorada".into()));
+            }
+        }
+    }
+
+    issues
+}
+
 fn read_coverage(project_path: &str, suite_cwd: &str) -> Option<f64> {
     let base = if suite_cwd.is_empty() {
         PathBuf::from(project_path)
@@ -759,6 +925,33 @@ pub(crate) fn execute_suite(app: &tauri::AppHandle, p: ExecParams) {
         // Access state through AppHandle inside the task (lifetime is 'static here)
         let state = app.state::<AppState>();
 
+        // Pré-validação: estrutura do projeto e servidores no ar
+        let issues = preflight_suite(&project_path, &suite_cwd, &suite_command, &suite_args, &suite_tag).await;
+        for i in &issues {
+            {
+                let mut meta = state.run_meta.lock().unwrap();
+                if let Some(m) = meta.get_mut(&sid) { m.output_lines.push(i.message.clone()); }
+            }
+            let _ = app.emit("suite-output", OutputEvent { suite_id: sid.clone(), line: i.message.clone() });
+        }
+        if issues.iter().any(|i| i.fatal) {
+            let msg = "Execução abortada pela pré-validação.".to_string();
+            {
+                let mut meta = state.run_meta.lock().unwrap();
+                if let Some(m) = meta.get_mut(&sid) { m.output_lines.push(msg.clone()); }
+            }
+            let _ = app.emit("suite-output", OutputEvent { suite_id: sid.clone(), line: msg });
+            save_run_to_db(&app, &sid, "failed", 0);
+            let _ = app.emit("suite-done", StatusEvent {
+                suite_id: sid.clone(),
+                status: "failed".into(),
+                duration: Some(0),
+                exit_code: Some(-1),
+            });
+            state.running.lock().unwrap().remove(&sid);
+            return;
+        }
+
         let mut cmd = build_suite_command(&suite_command, &suite_args, &pw_dir);
 
         let mut child = match cmd.spawn() {
@@ -1118,6 +1311,57 @@ mod tests {
         update_counts_from_line("2 passed", &mut pass, &mut fail);
         update_counts_from_line("1 failed", &mut pass, &mut fail);
         assert_eq!((pass, fail), (10, 5));
+    }
+
+    // ── extract_base_url / host_port (preflight) ──────────────────────────
+
+    #[test]
+    fn base_url_from_double_quotes() {
+        let cfg = r#"use: { baseURL: "http://localhost:5173", trace: "on" }"#;
+        assert_eq!(extract_base_url(cfg), Some("http://localhost:5173".into()));
+    }
+
+    #[test]
+    fn base_url_from_single_quotes() {
+        let cfg = "use: { baseURL: 'https://staging.znap.com.br/app' }";
+        assert_eq!(extract_base_url(cfg), Some("https://staging.znap.com.br/app".into()));
+    }
+
+    #[test]
+    fn base_url_with_env_fallback() {
+        let cfg = "baseURL: process.env.BASE_URL || 'http://127.0.0.1:3000',";
+        assert_eq!(extract_base_url(cfg), Some("http://127.0.0.1:3000".into()));
+    }
+
+    #[test]
+    fn base_url_none_when_absent() {
+        assert_eq!(extract_base_url("export default { retries: 2 }"), None);
+    }
+
+    #[test]
+    fn host_port_explicit() {
+        assert_eq!(host_port("http://localhost:5173/app"), Some(("localhost".into(), 5173)));
+    }
+
+    #[test]
+    fn host_port_defaults_by_scheme() {
+        assert_eq!(host_port("http://meuapp.local"), Some(("meuapp.local".into(), 80)));
+        assert_eq!(host_port("https://meuapp.local/x?q=1"), Some(("meuapp.local".into(), 443)));
+    }
+
+    #[test]
+    fn host_port_rejects_non_http() {
+        assert_eq!(host_port("ws://localhost:8080"), None);
+    }
+
+    #[test]
+    fn local_hosts_are_detected() {
+        assert!(is_local_host("localhost"));
+        assert!(is_local_host("LocalHost"));
+        assert!(is_local_host("127.0.0.1"));
+        assert!(is_local_host("::1"));
+        assert!(!is_local_host("staging.znap.com.br"));
+        assert!(!is_local_host("192.168.0.42"));
     }
 
     // ── read_coverage ─────────────────────────────────────────────────────

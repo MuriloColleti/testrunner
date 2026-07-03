@@ -104,6 +104,10 @@ function stopTimer(suiteId) {
 // ── Terminal ─────────────────────────────────────────────────────────────────
 function classifyLine(line) {
   const t = line.trim()
+  // Linhas da pré-validação do backend (sem ✓/✗ para não inflar contadores)
+  if (/^\[ERRO\]/.test(t))  return 'l-error'
+  if (/^\[AVISO\]/.test(t)) return 'l-running'
+  if (/^\[OK\]/.test(t))    return 'l-info'
   // Playwright line-reporter: "ok  N [worker] > ..." (passou)
   if (/^ok\s+\d+\s/.test(t))                                    return 'l-pass'
   // Playwright line-reporter: "x   N [worker] > ..." (falhou)
