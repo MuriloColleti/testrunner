@@ -186,8 +186,20 @@ fn strip_ansi(s: &str) -> String {
 
 /// Atualiza os contadores de pass/fail a partir de uma linha de output do
 /// runner (Playwright line-reporter, Vitest/Jest/Mocha unicode, sumários).
+/// Linhas de build (Vite e afins) usam ✓ e "passed"-like sem serem testes —
+/// ex.: "✓ 2658 modules transformed.", "✓ built in 27s", "dist/assets/...".
+fn is_build_noise(t: &str) -> bool {
+    t.contains("modules transformed")
+        || t.contains("built in")
+        || t.starts_with("dist/")
+        || t.starts_with("transforming")
+        || t.starts_with("rendering chunks")
+        || t.starts_with("computing gzip")
+}
+
 fn update_counts_from_line(line: &str, pass_count: &mut i64, fail_count: &mut i64) {
     let t = line.trim_start();
+    if is_build_noise(t) { return; }
     // Unicode check marks (Jest/Vitest/Mocha)
     if t.starts_with('✓') || t.starts_with('✔') { *pass_count += 1; }
     // Unicode cross marks (Jest/Vitest/Mocha)
@@ -1303,6 +1315,21 @@ mod tests {
     fn summary_overrides_lower_counts() {
         // Contagem linha-a-linha perdeu testes; o sumário corrige para cima
         assert_eq!(count(&["✓ um", "25 passed (30s)", "3 failed"]), (25, 3));
+    }
+
+    #[test]
+    fn build_output_is_not_counted_as_tests() {
+        assert_eq!(
+            count(&[
+                "✓ 2658 modules transformed.",
+                "✓ built in 27.31s",
+                "dist/assets/index-CCUEPQSR.css  548.32 kB | gzip: 67.57 kB",
+                "transforming ...",
+                "rendering chunks ...",
+                "computing gzip size ...",
+            ]),
+            (0, 0)
+        );
     }
 
     #[test]

@@ -108,6 +108,9 @@ function classifyLine(line) {
   if (/^\[ERRO\]/.test(t))  return 'l-error'
   if (/^\[AVISO\]/.test(t)) return 'l-running'
   if (/^\[OK\]/.test(t))    return 'l-info'
+  // Ruído de build (Vite e afins) usa ✓ sem ser resultado de teste
+  if (/modules transformed|built in/.test(t) || /^(dist\/|transforming|rendering chunks|computing gzip)/.test(t))
+    return 'l-default'
   // Playwright line-reporter: "ok  N [worker] > ..." (passou)
   if (/^ok\s+\d+\s/.test(t))                                    return 'l-pass'
   // Playwright line-reporter: "x   N [worker] > ..." (falhou)
